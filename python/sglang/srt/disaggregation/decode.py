@@ -849,6 +849,8 @@ class DecodeTransferQueue:
                 # release pre-allocated kv cache, but don't insert into the tree since it's failed
                 release_kv_cache(decode_req.req, self.tree_cache, is_insert=False)
                 indices_to_remove.add(i)
+                decode_req.kv_receiver.clear()
+                decode_req.kv_receiver = None
                 if self.scheduler.enable_metrics:
                     self.scheduler.metrics_collector.increment_transfer_failed_reqs()
                 continue

@@ -979,6 +979,12 @@ class NixlKVReceiver(CommonKVReceiver):
         status = self.kv_mgr.check_status(self.bootstrap_room)
         if status in (KVPoll.Success, KVPoll.Failed):
             self.conclude_state = status
+            if status == KVPoll.Failed:
+                self.kv_mgr.addr_to_rooms_tracker.get(
+                    self.bootstrap_addr, set()
+                ).discard(self.bootstrap_room)
+                if self.bootstrap_room in self.kv_mgr.transfer_statuses:
+                    del self.kv_mgr.transfer_statuses[self.bootstrap_room]
             return status
         if not self.started_transfer:
             return KVPoll.WaitingForInput  # type: ignore
@@ -993,6 +999,11 @@ class NixlKVReceiver(CommonKVReceiver):
                 f"Request {self.bootstrap_room} timed out after {elapsed:.1f}s in KVPoll.WaitingForInput",
             )
             self.conclude_state = KVPoll.Failed
+            self.kv_mgr.addr_to_rooms_tracker.get(self.bootstrap_addr, set()).discard(
+                self.bootstrap_room
+            )
+            if self.bootstrap_room in self.kv_mgr.transfer_statuses:
+                del self.kv_mgr.transfer_statuses[self.bootstrap_room]
             return KVPoll.Failed
 
         self.kv_mgr.update_transfer_status()
@@ -1044,7 +1055,22 @@ class NixlKVReceiver(CommonKVReceiver):
                     ]
                 )
 
+    def clear(self) -> None:
+        if self.bootstrap_room in self.kv_mgr.request_status:
+            self.kv_mgr.request_status.pop(self.bootstrap_room)
+        if self.bootstrap_room in self.kv_mgr.required_prefill_response_num_table:
+            self.kv_mgr.required_prefill_response_num_table.pop(self.bootstrap_room)
+        if self.bootstrap_room in self.kv_mgr.transfer_statuses:
+            del self.kv_mgr.transfer_statuses[self.bootstrap_room]
+        if hasattr(self.kv_mgr, "addr_to_rooms_tracker"):
+            self.kv_mgr.addr_to_rooms_tracker.get(self.bootstrap_addr, set()).discard(
+                self.bootstrap_room
+            )
+
     def failure_exception(self):
+        if self.conclude_state is None:
+            self.conclude_state = KVPoll.Failed
+        self.clear()
         raise RuntimeError("NIXL KVReceiver Exception")
 
 
