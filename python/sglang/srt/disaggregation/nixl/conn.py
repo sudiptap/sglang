@@ -214,6 +214,9 @@ class NixlKVManager(CommonKVManager):
                 f"Unsupported DisaggregationMode: {self.disaggregation_mode}"
             )
 
+        self.failure_records: Dict[int, str] = {}
+        self.failure_lock = threading.Lock()
+
     def _start_heartbeat_checker_thread(self):
         """
         Start the heartbeat checker thread for Decode worker.
@@ -307,7 +310,7 @@ class NixlKVManager(CommonKVManager):
             self.update_status(room, KVPoll.Failed)
 
     def check_status(self, bootstrap_room: int):
-        return self.request_status[bootstrap_room]
+        return self.request_status.get(bootstrap_room, KVPoll.Bootstrapping)
 
     def update_status(self, bootstrap_room: int, status: KVPoll):
         if bootstrap_room not in self.request_status:
@@ -322,7 +325,9 @@ class NixlKVManager(CommonKVManager):
                 )
 
     def record_failure(self, bootstrap_room: int, failure_reason: str):
-        pass
+        with self.failure_lock:
+            self.failure_records[bootstrap_room] = failure_reason
+        logger.warning(f"Failure recorded for room {bootstrap_room}: {failure_reason}")
 
     def register_buffer_to_engine(self):
         kv_addrs = []
@@ -867,6 +872,7 @@ class NixlKVSender(CommonKVSender):
         self.xfer_handles = []
         self.has_sent = False
         self.chunk_id = 0
+        self.conclude_state = None
 
     def send(
         self,
@@ -890,20 +896,37 @@ class NixlKVSender(CommonKVSender):
         self.chunk_id += 1
         if is_last:
             self.has_sent = True
-            del self.kv_mgr.request_status[self.bootstrap_room]
+            self.kv_mgr.request_status.pop(self.bootstrap_room, None)
 
     def poll(self) -> KVPoll:
+        if self.conclude_state is not None:
+            return self.conclude_state
         if not self.has_sent:
-            return self.kv_mgr.check_status(self.bootstrap_room)
+            status = self.kv_mgr.check_status(self.bootstrap_room)
+            if status == KVPoll.Failed:
+                self.conclude_state = KVPoll.Failed
+            return status
         states = [self.kv_mgr.agent.check_xfer_state(x) for x in self.xfer_handles]
-        if all([x == "DONE" for x in states]):
-            return KVPoll.Success  # type: ignore
-        if any([x == "ERR" for x in states]):
+        if all(x == "DONE" for x in states):
+            self.conclude_state = KVPoll.Success
+            return KVPoll.Success
+        if any(x == "ERR" for x in states):
+            self.conclude_state = KVPoll.Failed
             raise Exception("KVSender transfer encountered an error.")
-        return KVPoll.WaitingForInput  # type: ignore
+        return KVPoll.WaitingForInput
+
+    def clear(self) -> None:
+        self.kv_mgr.request_status.pop(self.bootstrap_room, None)
 
     def failure_exception(self):
-        raise RuntimeError("NIXL KVSender Exception")
+        if self.conclude_state is None:
+            self.conclude_state = KVPoll.Failed
+        self.clear()
+        with self.kv_mgr.failure_lock:
+            failure_reason = self.kv_mgr.failure_records.pop(
+                self.bootstrap_room, "NIXL KVSender transfer failed"
+            )
+        raise RuntimeError(failure_reason)
 
 
 class NixlKVReceiver(CommonKVReceiver):
@@ -924,6 +947,9 @@ class NixlKVReceiver(CommonKVReceiver):
                 self.bootstrap_room
             )
         self.init_time = None
+
+        if hasattr(self, "bootstrap_infos") and self.bootstrap_infos is not None:
+            self.kv_mgr.update_status(self.bootstrap_room, KVPoll.WaitingForInput)
 
     def init(
         self,
@@ -1071,7 +1097,11 @@ class NixlKVReceiver(CommonKVReceiver):
         if self.conclude_state is None:
             self.conclude_state = KVPoll.Failed
         self.clear()
-        raise RuntimeError("NIXL KVReceiver Exception")
+        with self.kv_mgr.failure_lock:
+            failure_reason = self.kv_mgr.failure_records.pop(
+                self.bootstrap_room, "NIXL KVReceiver transfer failed"
+            )
+        raise RuntimeError(failure_reason)
 
 
 class NixlKVBootstrapServer(CommonKVBootstrapServer):
