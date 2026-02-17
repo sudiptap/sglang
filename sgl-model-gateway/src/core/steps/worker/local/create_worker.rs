@@ -97,7 +97,7 @@ impl StepExecutor<LocalWorkerWorkflowData> for CreateLocalWorkerStep {
         );
 
         // Parse worker type
-        let worker_type = parse_worker_type(config);
+        let worker_type = parse_worker_type(config, &final_labels);
 
         // Get runtime type (for gRPC workers)
         let runtime_type = determine_runtime_type(connection_mode, &context.data, config);
@@ -222,13 +222,17 @@ fn build_model_card(
     card
 }
 
-fn parse_worker_type(config: &WorkerConfigRequest) -> WorkerType {
+fn parse_worker_type(config: &WorkerConfigRequest, labels: &HashMap<String, String>) -> WorkerType {
     config
         .worker_type
         .as_ref()
         .map(|t| match t.as_str() {
             "prefill" => WorkerType::Prefill {
-                bootstrap_port: config.bootstrap_port,
+                bootstrap_port: config.bootstrap_port.or_else(|| {
+                    labels
+                        .get("disaggregation_bootstrap_port")
+                        .and_then(|s| s.parse().ok())
+                }),
             },
             "decode" => WorkerType::Decode,
             _ => WorkerType::Regular,

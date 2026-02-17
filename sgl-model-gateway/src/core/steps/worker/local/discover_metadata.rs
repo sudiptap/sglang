@@ -35,6 +35,7 @@ pub struct ServerInfo {
     pub dp_size: Option<usize>,
     pub load_balance_method: Option<String>,
     pub disaggregation_mode: Option<String>,
+    pub disaggregation_bootstrap_port: Option<u16>,
     pub version: Option<String>,
     pub max_batch_size: Option<usize>,
     pub max_total_tokens: Option<usize>,
@@ -261,6 +262,12 @@ impl StepExecutor<LocalWorkerWorkflowData> for DiscoverMetadataStep {
                     }
                     if let Some(disaggregation_mode) = server_info.disaggregation_mode {
                         labels.insert("disaggregation_mode".to_string(), disaggregation_mode);
+                    }
+                    if let Some(port) = server_info.disaggregation_bootstrap_port {
+                        labels.insert(
+                            "disaggregation_bootstrap_port".to_string(),
+                            port.to_string(),
+                        );
                     }
                 }
 
